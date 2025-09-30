@@ -1,0 +1,17 @@
+# .streamlit/config.toml
+
+[theme]
+# A professional blue for interactive elements
+primaryColor="#00529E"
+
+# A light gray for the main background
+backgroundColor="#F0F2F6"
+
+# A clean white for elements like the chat input and sidebar
+secondaryBackgroundColor="#FFFFFF"
+
+# A dark, readable text color
+textColor="#1E1E1E"
+
+# Use a clean, standard font
+font="sans serif"
