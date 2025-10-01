@@ -1354,6 +1354,7 @@ def build_gl_guide_kb(pdf_path: str) -> bool:
             img = doc.extract_image(xref)
             ext = img.get("ext", "png").lower()
             # Use a more descriptive filename
+            # Inside the save_image function in build_gl_guide_kb
             out_path = out_dir / f"{safe_title}_img_{img_idx}.{ext}"
             with open(out_path, "wb") as f:
                 f.write(img["image"])
