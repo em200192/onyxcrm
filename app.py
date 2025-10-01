@@ -10,7 +10,6 @@ import base64
 import torch
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer, util
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import LLMChain
@@ -23,7 +22,6 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 # --- CONFIGURATION ---
-load_dotenv()
 st.set_page_config(
     page_title="المساعد الذكي",
     page_icon="🤖",
@@ -140,8 +138,8 @@ MAX_FOLLOW_UP_ATTEMPTS = 2
 
 
 # >>> NEW: GCS config (optional)
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")              # e.g. "crm-escalations"
-GCS_CREDENTIALS_JSON = os.getenv("GCS_CREDENTIALS_JSON","")    # optional path to SA JSON
+# --- CONSTANTS & DIRECTORIES ---
+GCS_BUCKET_NAME = st.secrets.get("gcs", {}).get("bucket_name")
 
 # Place near other constants
 ACTIVE_INTENT_THRESHOLDS = {
@@ -791,39 +789,6 @@ def generate_guide_instructions(section: dict, user_query: str = "") -> dict:
     imgs = section.get("images") or []
     return {"answer": md, "images": imgs}
 
-@st.cache_resource
-def create_escalation_judge_chain():
-    llm = get_llm_model()
-    prompt = PromptTemplate(
-        template="""
-أنت "مُقيِّم متابعة". لديك:
-- المشكلة: رقم {message_number} | نص: {message_text}
-- السبب: {reason}
-- الحل الكامل: {solution}
-- آخر ردين للمساعد: [{a1}] ثم [{a2}]
-- آخر ردين للمستخدم: [{u1}] ثم [{u2}]
-- رسالة المستخدم الآن: {user_text}
-- الإجراء المقترح من المساعد الآن: {assistant_proposal}
-
-قيِّم:
-1) هل هذا الإجراء **جديد ومفيد** (وليس تكرارًا واضحًا)؟
-2) هل المستخدم **محجوب/مقيّد** (صلاحيات/شاشة لا تفتح/جرّب ولم ينجح)؟
-3) احتمالية أننا بحاجة للتصعيد الآن.
-
-أجب JSON فقط:
-{{
-  "new_action_quality": 0.0_to_1.0,
-  "blocked_signals": ["..."],
-  "escalate_prob": 0.0_to_1.0,
-  "short_reason": "<سبب مختصر>"
-}}
-""",
-        input_variables=[
-            "message_number","message_text","reason","solution",
-            "a1","a2","u1","u2","user_text","assistant_proposal"
-        ]
-    )
-    return LLMChain(llm=llm, prompt=prompt, verbose=False)
 
 @st.cache_resource
 def create_escalation_intent_chain():
@@ -890,7 +855,7 @@ JSON فقط:
 
 @st.cache_resource
 def get_llm_model():
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = st.secrets.get("google", {}).get("api_key")
     if not api_key:
         st.error("لم يتم العثور على مفتاح Google API. يرجى إضافته إلى ملف .env")
         st.stop()
@@ -1348,24 +1313,26 @@ def build_gl_guide_kb(pdf_path: str) -> bool:
         return s
 
     def save_image(doc, xref, out_dir: Path, topic_title: str, img_idx: int):
-        # Clean the title to use in the filename
+        # --- NEW SANITIZATION LOGIC ---
+        # 1. Keep only English letters and numbers
         temp_title = re.sub(r'[^a-zA-Z0-9\s]', '', topic_title)
+        # 2. Replace spaces with underscores and make it lowercase
         safe_title = re.sub(r'\s+', '_', temp_title).lower().strip('_')[:30]
+        # Use a default name if the title had no English characters
         if not safe_title:
-            safe_title = "guide_topic"  
-        
+            safe_title = "guide_topic"
+        # --- END OF NEW LOGIC ---
+
         try:
             img = doc.extract_image(xref)
             ext = img.get("ext", "png").lower()
-            # Use a more descriptive filename
-            # Inside the save_image function in build_gl_guide_kb
+            # The rest of the function remains the same
             out_path = out_dir / f"{safe_title}_img_{img_idx}.{ext}"
             with open(out_path, "wb") as f:
                 f.write(img["image"])
             return str(out_path)
         except Exception:
             return None
-
     def get_marker_pos(doc, page_range, marker_text, after_pos=None):
         # Finds the first occurrence of a marker AFTER a specific starting position.
         for page_num in page_range:
@@ -1679,6 +1646,7 @@ def _build_case_csv_bytes(user_query: str) -> bytes:
     return ("\ufeff" + buf.getvalue()).encode("utf-8-sig")
 
 # >>> NEW: upload to GCS and return gs:// URI (or None)
+# >>> NEW: upload to GCS and return gs:// URI (or None)
 def _upload_case_to_gcs(user_query: str):
     if not GCS_BUCKET_NAME:
         return None  # not configured; skip quietly
@@ -1688,12 +1656,17 @@ def _upload_case_to_gcs(user_query: str):
         from google.cloud import storage
         from google.oauth2 import service_account
 
-        # Build client
-        if GCS_CREDENTIALS_JSON and os.path.exists(GCS_CREDENTIALS_JSON):
-            creds = service_account.Credentials.from_service_account_file(GCS_CREDENTIALS_JSON)
-            client = storage.Client(credentials=creds, project=creds.project_id)
-        else:
-            client = storage.Client()  # ADC
+        # --- THIS IS THE CRITICAL CHANGE ---
+        # Get credentials from Streamlit's secrets, not a file path
+        creds_str = st.secrets.get("gcs_creds", {}).get("text_credentials")
+        if not creds_str:
+            st.warning("GCS credentials not found in Streamlit secrets.")
+            return None
+
+        creds_info = json.loads(creds_str)
+        creds = service_account.Credentials.from_service_account_info(creds_info)
+        client = storage.Client(credentials=creds, project=creds.project_id)
+        # --- END OF CRITICAL CHANGE ---
 
         bucket = client.bucket(GCS_BUCKET_NAME)
 
@@ -1708,11 +1681,11 @@ def _upload_case_to_gcs(user_query: str):
         blob.upload_from_string(data, content_type="text/csv")
 
         return f"gs://{GCS_BUCKET_NAME}/{object_name}"
+
     except Exception as e:
         # Don’t break the UX; just log a warning for admins/devs
-        st.warning(f"تعذر رفع تقرير التصعيد إلى السحابة: {e}")
+        st.error(f"⚠️ تعذر رفع تقرير التصعيد إلى السحابة: {e}") # Changed to st.error to be visible
         return None
-
 def _escalate_and_reset(user_query: str, preface: str = None):
     # Upload snapshot before resetting state
     gcs_uri = _upload_case_to_gcs(user_query)
