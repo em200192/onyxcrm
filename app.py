@@ -1349,7 +1349,11 @@ def build_gl_guide_kb(pdf_path: str) -> bool:
 
     def save_image(doc, xref, out_dir: Path, topic_title: str, img_idx: int):
         # Clean the title to use in the filename
-        safe_title = re.sub(r'[^a-zA-Z0-9\u0600-\u06FF]', '_', topic_title)[:30]
+        temp_title = re.sub(r'[^a-zA-Z0-9\s]', '', topic_title)
+        safe_title = re.sub(r'\s+', '_', temp_title).lower().strip('_')[:30]
+        if not safe_title:
+            safe_title = "guide_topic"  
+        
         try:
             img = doc.extract_image(xref)
             ext = img.get("ext", "png").lower()
